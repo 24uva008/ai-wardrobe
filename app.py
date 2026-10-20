@@ -48,10 +48,12 @@ def db_connect():
         clip_vector TEXT
     )""")
     con.execute("""
-    CREATE TABLE IF NOT EXISTS feedback(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT, outfit_key TEXT, rating INTEGER
-    )""")
+CREATE TABLE IF NOT EXISTS feedback(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT,
+    outfit_key TEXT,
+    rating INTEGER
+)""")
     con.commit()
     return con
 
@@ -373,7 +375,7 @@ elif page == "Find Your Outfit":
 else:
     st.title("💌 My Feedback")
     rows = con.execute(
-        "SELECT outfit_key,rating FROM feedback WHERE username=? ORDER BY id DESC",
+        "SELECT outfit_key,rating FROM feedback WHERE username=?",
         (user,)
     ).fetchall()
 
