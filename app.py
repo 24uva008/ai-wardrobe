@@ -154,3 +154,48 @@ if not st.session_state.user:
         if st.button("Register"):
             if len(new_user.strip()) < 3:
                 st.warning("Username must contain at least 3 characters.")
+
+            elif len(new_password) < 6:
+                st.warning("Password must contain at least 6 characters.")
+
+            elif new_password != confirm_password:
+                st.warning("Passwords do not match.")
+
+            else:
+                try:
+                    con.execute(
+                        "INSERT INTO users (username, password) VALUES (?, ?)",
+                        (
+                            new_user.strip(),
+                            password_hash(new_password)
+                        )
+                    )
+                    con.commit()
+                    st.success(
+                        "Account created successfully! "
+                        "Now open the Login tab."
+                    )
+                except sqlite3.IntegrityError:
+                    st.error("Username already exists. Choose another one.")
+
+    with login:
+        st.subheader("Welcome back 💗")
+
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input(
+            "Password", type="password", key="login_password"
+        )
+
+        if st.button("Login"):
+            result = con.execute(
+                "SELECT * FROM users WHERE username = ? AND password = ?",
+                (username.strip(), password_hash(password))
+            ).fetchone()
+
+            if result:
+                st.session_state.user = username.strip()
+                st.rerun()
+            else:
+                st.error("Incorrect username or password.")
+
+    st.stop()
