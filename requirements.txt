@@ -1,3 +1,6 @@
 
 streamlit
-pandas
+pillow
+numpy
+torch
+transformers
