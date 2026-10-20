@@ -364,8 +364,8 @@ elif page == "Find Your Outfit":
                         st.rerun()
 
     st.caption(
-        "Prototype: occasion filtering uses rules. CLIP extracts visual image features; "
-        "cosine similarity compares vectors. It does not guarantee fashion compatibility."
+    "Prototype: occasion filtering uses rules. CLIP extracts visual image features; "
+    "cosine similarity compares vectors. It does not guarantee fashion compatibility."
     )
 
 
