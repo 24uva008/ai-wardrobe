@@ -162,6 +162,7 @@ if not st.session_state.user:
                 st.warning("Passwords do not match.")
 
             else:
+                
                 try:
                     con.execute(
                         "INSERT INTO users (username, password) VALUES (?, ?)",
@@ -171,13 +172,11 @@ if not st.session_state.user:
                         )
                     )
                     con.commit()
-                    st.success(
-                        "Account created successfully! "
-                        "Now open the Login tab."
-                    )
+                    st.success("Account created! Now click the Login tab.")
                 except sqlite3.IntegrityError:
-                    st.error("Username already exists. Choose another one.")
-
+                    st.error("Username already exists. Please choose another.")
+                except sqlite3.OperationalError as error:
+                    st.error(f"Database error: {error}")
     with login:
         st.subheader("Welcome back 💗")
 
