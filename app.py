@@ -1,458 +1,329 @@
-
 import streamlit as st
 import sqlite3
-import os
 from datetime import datetime
 
-st.set_page_config(
-    page_title="AI Wardrobe",
-    page_icon="👗",
-    layout="wide"
-)
+st.set_page_config(page_title="AI Wardrobe", page_icon="🎀", layout="wide")
 
-DB_NAME = "wardrobe.db"
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+DB = "ai_wardrobe.db"
 
-
-def get_db():
-    return sqlite3.connect(DB_NAME)
-
-
-def setup_db():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password TEXT NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS clothes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            colour TEXT NOT NULL,
-            style TEXT NOT NULL,
-            occasions TEXT NOT NULL,
-            image_path TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            outfit TEXT NOT NULL,
-            rating TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    conn.commit()
-    conn.close()
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+html, body, [class*="css"] {font-family:Poppins,sans-serif;}
+.stApp {background:#fff5fa;}
+[data-testid="stSidebar"] {background:#ffe0ed;}
+h1,h2,h3 {color:#ad3974;}
+.stButton>button {
+ background:#e65b9b;color:white;border:0;border-radius:12px;
+ font-weight:600;width:100%;
+}
+.stButton>button:hover {background:#c83c80;color:white;}
+.card {
+ background:white;border:1px solid #f4c4da;border-radius:18px;
+ padding:16px;margin-bottom:12px;
+}
+.hero {
+ background:linear-gradient(120deg,#ffd4e7,#fff0f7);
+ padding:25px;border-radius:22px;margin-bottom:20px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 
-setup_db()
+def connect():
+    return sqlite3.connect(DB, check_same_thread=False)
 
 
-def query_db(sql, params=(), fetch=False):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(sql, params)
-    result = cur.fetchall() if fetch else None
-    conn.commit()
-    conn.close()
-    return result
+with connect() as con:
+    con.execute("""CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS clothes(
+        id INTEGER PRIMARY KEY, uid INTEGER, name TEXT, category TEXT,
+        color TEXT, style TEXT, occasions TEXT, photo BLOB)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS feedback(
+        id INTEGER PRIMARY KEY, uid INTEGER, occasion TEXT,
+        outfit TEXT, rating TEXT, date TEXT)""")
 
 
-# Demo wardrobe items
-def add_demo_clothes(username):
-    existing = query_db(
-        "SELECT id FROM clothes WHERE username=?",
-        (username,), True
-    )
-    if existing:
-        return
-
-    demo = [
-        ("Black Shirt", "Top", "Black", "Casual",
-         "College, Casual"),
-        ("White Shirt", "Top", "White", "Formal",
-         "College, Office, Interview"),
-        ("Blue Jeans", "Bottom", "Blue", "Casual",
-         "College, Casual"),
-        ("Black Trousers", "Bottom", "Black", "Formal",
-         "Office, Interview, Party"),
-        ("Floral Kurti", "Top", "Pink", "Traditional",
-         "College, Festival, Casual"),
-        ("Traditional Dress", "One-piece", "Maroon",
-         "Grand", "Wedding, Festival, Party")
-    ]
-
-    for name, category, colour, style, occasions in demo:
-        query_db("""
-            INSERT INTO clothes
-            (username, name, category, colour, style, occasions)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (username, name, category, colour, style, occasions))
+def get_clothes(uid):
+    with connect() as con:
+        return con.execute(
+            "SELECT id,name,category,color,style,occasions,photo FROM clothes WHERE uid=?",
+            (uid,)
+        ).fetchall()
 
 
-def login_screen():
-    st.title("👗 AI Wardrobe")
-    st.write("Your personal virtual fashion assistant")
-    st.caption("Discover outfit combinations from your wardrobe.")
+def get_feedback(uid):
+    with connect() as con:
+        return con.execute(
+            "SELECT occasion,outfit,rating,date FROM feedback WHERE uid=? ORDER BY id DESC",
+            (uid,)
+        ).fetchall()
 
-    tab1, tab2 = st.tabs(["Login", "Register"])
 
-    with tab1:
-        username = st.text_input("Username", key="login_user")
-        password = st.text_input(
-            "Password", type="password", key="login_pass"
-        )
+# LOGIN / REGISTER
+if "uid" not in st.session_state:
+    st.session_state.uid = None
 
-        if st.button("Login", use_container_width=True):
-            users = query_db(
-                "SELECT username FROM users WHERE username=? AND password=?",
-                (username.strip(), password), True
-            )
-            if users:
-                st.session_state.username = username.strip()
-                add_demo_clothes(username.strip())
+if st.session_state.uid is None:
+    st.markdown("""
+    <div class="hero">
+    <h1>🎀 AI Wardrobe</h1>
+    <h3>Your personal virtual fashion assistant</h3>
+    <p>Discover beautiful outfit combinations from your own wardrobe.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    mode = st.radio("Welcome!", ["Login", "Register"], horizontal=True)
+
+    with st.form("account"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button(mode)
+
+    if submit:
+        if not username.strip() or not password:
+            st.error("Enter your username and password.")
+        elif mode == "Register":
+            try:
+                with connect() as con:
+                    con.execute("INSERT INTO users(username,password) VALUES(?,?)",
+                                (username.strip(), password))
+                st.success("Account created! Select Login to continue.")
+            except sqlite3.IntegrityError:
+                st.error("Username already exists. Try another.")
+        else:
+            with connect() as con:
+                row = con.execute(
+                    "SELECT id FROM users WHERE username=? AND password=?",
+                    (username.strip(), password)
+                ).fetchone()
+            if row:
+                st.session_state.uid = row[0]
+                st.session_state.username = username
                 st.rerun()
             else:
-                st.error("Invalid username or password.")
+                st.error("Incorrect username or password.")
 
-    with tab2:
-        new_user = st.text_input("Choose username", key="reg_user")
-        new_pass = st.text_input(
-            "Choose password", type="password", key="reg_pass"
-        )
-
-        if st.button("Create Account", use_container_width=True):
-            if not new_user.strip() or not new_pass:
-                st.warning("Enter a username and password.")
-            elif query_db(
-                "SELECT username FROM users WHERE username=?",
-                (new_user.strip(),), True
-            ):
-                st.error("Username already exists.")
-            else:
-                query_db(
-                    "INSERT INTO users VALUES (?, ?)",
-                    (new_user.strip(), new_pass)
-                )
-                add_demo_clothes(new_user.strip())
-                st.success("Account created! Please log in.")
-
-    st.info(
-        "Demo version: use a unique test password. "
-        "Production deployment needs secure password hashing and "
-        "persistent database storage."
-    )
+    st.stop()
 
 
-def get_clothes(username):
-    return query_db("""
-        SELECT id, name, category, colour, style, occasions, image_path
-        FROM clothes WHERE username=?
-        ORDER BY id DESC
-    """, (username,), True)
+uid = st.session_state.uid
+clothes = get_clothes(uid)
+
+st.sidebar.markdown("# 🎀 AI Wardrobe")
+st.sidebar.write(f"Welcome, {st.session_state.get('username', 'User')}!")
+page = st.sidebar.radio("MENU", [
+    "✨ Outfit Suggestions",
+    "👗 My Wardrobe",
+    "💗 My Feedback"
+])
+
+if st.sidebar.button("Log out"):
+    st.session_state.uid = None
+    st.rerun()
 
 
-def wardrobe_page(username):
-    st.header("👚 My Wardrobe")
-    st.write("View sample clothes or add your own clothing items.")
+# PAGE 1: OUTFIT SUGGESTIONS
+if page == "✨ Outfit Suggestions":
+    st.markdown("""
+    <div class="hero">
+    <h1>✨ Find Your Outfit</h1>
+    <p>Choose an occasion and discover combinations from your saved clothes.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    with st.expander("➕ Add a clothing item"):
-        with st.form("add_clothing", clear_on_submit=True):
-            name = st.text_input("Clothing name")
-            category = st.selectbox(
-                "Category", ["Top", "Bottom", "One-piece", "Footwear",
-                             "Accessory", "Outerwear"]
-            )
-            colour = st.selectbox(
-                "Colour", ["Black", "White", "Blue", "Red", "Pink",
-                           "Green", "Yellow", "Brown", "Maroon",
-                           "Grey", "Beige", "Other"]
-            )
-            style = st.selectbox(
-                "Style", ["Casual", "Formal", "Traditional", "Grand",
-                          "Sporty", "Party"]
-            )
-            occasions = st.multiselect(
-                "Suitable occasions",
-                ["College", "Office", "Wedding", "Festival",
-                 "Party", "Casual", "Interview", "Travel"]
-            )
-            image = st.file_uploader(
-                "Clothing photo (optional)",
-                type=["jpg", "jpeg", "png"]
-            )
-            submitted = st.form_submit_button("Save Clothing")
-
-            if submitted:
-                if not name.strip() or not occasions:
-                    st.error("Enter the name and select an occasion.")
-                else:
-                    image_path = None
-                    if image:
-                        safe_name = (
-                            f"{username}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-                            f"_{image.name.replace(' ', '_')}"
-                        )
-                        image_path = os.path.join(UPLOAD_DIR, safe_name)
-                        with open(image_path, "wb") as file:
-                            file.write(image.getbuffer())
-
-                    query_db("""
-                        INSERT INTO clothes
-                        (username, name, category, colour, style,
-                         occasions, image_path)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        username, name.strip(), category, colour,
-                        style, ", ".join(occasions), image_path
-                    ))
-                    st.success("Clothing saved!")
-                    st.rerun()
-
-    clothes = get_clothes(username)
     if not clothes:
-        st.info("Your wardrobe is empty.")
-        return
+        st.info("First, open My Wardrobe and add some clothes.")
+    else:
+        occasion = st.selectbox("1. Select occasion",
+            ["College", "Casual", "Wedding", "Party", "Office", "Festive"])
+        style = st.selectbox("2. Preferred style",
+            ["Any style", "Simple", "Casual", "Formal", "Traditional", "Grand"])
+        color = st.selectbox("3. Preferred colour",
+            ["Any colour", "Pink", "Black", "White", "Blue", "Red",
+             "Green", "Yellow", "Purple", "Beige", "Grey", "Denim"])
 
-    cols = st.columns(3)
-    for i, item in enumerate(clothes):
-        item_id, name, category, colour, style, occasions, image_path = item
-        with cols[i % 3]:
-            with st.container(border=True):
-                if image_path and os.path.exists(image_path):
-                    st.image(image_path, use_container_width=True)
-                st.subheader(name)
-                st.write(f"**Category:** {category}")
-                st.write(f"**Colour:** {colour}")
-                st.write(f"**Style:** {style}")
-                st.caption(f"Occasions: {occasions}")
-                if st.button("Delete", key=f"delete_{item_id}"):
-                    query_db(
-                        "DELETE FROM clothes WHERE id=? AND username=?",
-                        (item_id, username)
-                    )
-                    st.rerun()
+        if st.button("💗 Suggest My Outfit"):
+            st.session_state.show_results = True
+            st.session_state.occasion = occasion
+            st.session_state.style = style
+            st.session_state.color = color
 
+        if st.session_state.get("show_results"):
+            occasion = st.session_state.occasion
+            style = st.session_state.style
+            color = st.session_state.color
 
-def recommendation_page(username):
-    st.header("✨ Outfit Recommendation")
-    st.write("Choose an occasion and preferences to find matching clothes.")
+            tops = [x for x in clothes if x[2] in
+                    ["Top", "Shirt", "Kurti", "T-shirt", "Blouse"]]
+            bottoms = [x for x in clothes if x[2] in
+                       ["Bottom", "Pants", "Jeans", "Skirt", "Leggings"]]
+            dresses = [x for x in clothes if x[2] in
+                       ["Dress", "One-piece", "Kurta set"]]
 
-    with st.form("recommendation_form"):
-        occasion = st.selectbox(
-            "Select occasion",
-            ["College", "Office", "Wedding", "Festival",
-             "Party", "Casual", "Interview", "Travel"]
-        )
-        preferred_style = st.selectbox(
-            "Preferred style",
-            ["Any", "Casual", "Formal", "Traditional", "Grand",
-             "Sporty", "Party"]
-        )
-        preferred_colour = st.selectbox(
-            "Preferred colour",
-            ["Any", "Black", "White", "Blue", "Red", "Pink",
-             "Green", "Yellow", "Brown", "Maroon", "Grey", "Beige"]
-        )
-        submitted = st.form_submit_button("Recommend Outfits")
+            feedback = get_feedback(uid)
+            liked = [x[1] for x in feedback if x[2] == "Like"]
+            disliked = [x[1] for x in feedback if x[2] == "Dislike"]
 
-    if not submitted:
-        st.info("Select your preferences and click Recommend Outfits.")
-        return
+            results = []
+            for top in tops:
+                for bottom in bottoms:
+                    title = top[1] + " + " + bottom[1]
+                    score = 0
+                    if top[4] == style or style == "Any style":
+                        score += 2
+                    if bottom[4] == style or style == "Any style":
+                        score += 2
+                    if top[3] == color or color == "Any colour":
+                        score += 2
+                    if bottom[3] in ["Black", "White", "Beige", "Denim", "Grey"]:
+                        score += 1
+                    if occasion in top[5] or occasion in bottom[5]:
+                        score += 3
+                    if title in liked:
+                        score += 2
+                    if title in disliked:
+                        score -= 3
+                    results.append((score, title, top, bottom))
 
-    clothes = get_clothes(username)
-    suitable = [
-        item for item in clothes
-        if occasion.lower() in item[5].lower()
-    ]
+            for dress in dresses:
+                score = 3 if occasion in dress[5] else 0
+                if dress[4] == style or style == "Any style":
+                    score += 2
+                if dress[3] == color or color == "Any colour":
+                    score += 2
+                results.append((score, dress[1], dress, None))
 
-    if preferred_style != "Any":
-        styled = [
-            item for item in suitable
-            if item[4].lower() == preferred_style.lower()
-        ]
-        if styled:
-            suitable = styled
+            results.sort(key=lambda x: x[0], reverse=True)
 
-    if preferred_colour != "Any":
-        coloured = [
-            item for item in suitable
-            if item[3].lower() == preferred_colour.lower()
-        ]
-        if coloured:
-            suitable = coloured
-
-    # Basic matching: pair a top with a bottom.
-    tops = [x for x in suitable if x[2] in ("Top", "One-piece")]
-    bottoms = [x for x in suitable if x[2] == "Bottom"]
-
-    # Rank pairs by simple colour/style rules and saved feedback.
-    pairs = []
-    feedback_rows = query_db(
-        "SELECT outfit, rating FROM feedback WHERE username=?",
-        (username,), True
-    )
-    liked = {x[0] for x in feedback_rows if x[1] == "Like"}
-    disliked = {x[0] for x in feedback_rows if x[1] == "Dislike"}
-
-    for top in tops:
-        if top[2] == "One-piece":
-            label = top[1]
-            score = 2
-            if label in liked:
-                score += 3
-            if label in disliked:
-                score -= 5
-            pairs.append((score, label, [top]))
-            continue
-
-        for bottom in bottoms:
-            if top[3] == bottom[3]:
-                score = 0
+            st.markdown(f"## Your outfit ideas for {occasion} 💕")
+            if not results:
+                st.warning("Add a top and bottom, or a dress, to get recommendations.")
             else:
-                score = 2
+                for _, title, first, second in results[:6]:
+                    with st.container(border=True):
+                        st.subheader("🎀 " + title)
+                        a, b = st.columns(2)
+                        with a:
+                            if first[6]:
+                                st.image(first[6], use_container_width=True)
+                            st.write(first[1])
+                            st.caption(f"{first[3]} · {first[4]}")
+                        if second:
+                            with b:
+                                if second[6]:
+                                    st.image(second[6], use_container_width=True)
+                                st.write(second[1])
+                                st.caption(f"{second[3]} · {second[4]}")
 
-            if top[4] == bottom[4]:
-                score += 1
+                        f1, f2 = st.columns(2)
+                        with f1:
+                            if st.button("💗 Like", key="L"+title):
+                                with connect() as con:
+                                    con.execute(
+                                        "INSERT INTO feedback(uid,occasion,outfit,rating,date) VALUES(?,?,?,?,?)",
+                                        (uid, occasion, title, "Like",
+                                         datetime.now().strftime("%d %b %Y %I:%M %p")))
+                                st.success("Thanks! Your feedback is saved.")
+                        with f2:
+                            if st.button("👎 Dislike", key="D"+title):
+                                with connect() as con:
+                                    con.execute(
+                                        "INSERT INTO feedback(uid,occasion,outfit,rating,date) VALUES(?,?,?,?,?)",
+                                        (uid, occasion, title, "Dislike",
+                                         datetime.now().strftime("%d %b %Y %I:%M %p")))
+                                st.info("Feedback saved.")
 
-            label = f"{top[1]} + {bottom[1]}"
-            if label in liked:
-                score += 3
-            if label in disliked:
-                score -= 5
-            pairs.append((score, label, [top, bottom]))
 
-    pairs.sort(key=lambda x: x[0], reverse=True)
+# PAGE 2: MY WARDROBE
+elif page == "👗 My Wardrobe":
+    st.markdown("""
+    <div class="hero">
+    <h1>👗 My Wardrobe</h1>
+    <p>Save your clothes here. Outfit suggestions will use these items.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if not pairs:
-        st.warning(
-            "No complete outfit found for this selection. "
-            "Try another occasion or add suitable clothes."
-        )
-        st.write("Suitable individual items:")
-        for item in suitable:
-            st.write(f"- {item[1]} ({item[3]}, {item[4]})")
-        return
+    with st.form("add_clothes", clear_on_submit=True):
+        name = st.text_input("Clothing name", placeholder="e.g. Pink kurti")
+        category = st.selectbox("Clothing type",
+            ["Top", "Shirt", "Kurti", "T-shirt", "Blouse",
+             "Bottom", "Pants", "Jeans", "Skirt", "Leggings",
+             "Dress", "One-piece", "Kurta set"])
+        color = st.selectbox("Colour",
+            ["Black", "White", "Pink", "Blue", "Red", "Green",
+             "Yellow", "Purple", "Beige", "Grey", "Denim", "Brown"])
+        style = st.selectbox("Style",
+            ["Simple", "Casual", "Formal", "Traditional", "Grand"])
+        occasions = st.multiselect("Suitable occasions",
+            ["College", "Casual", "Wedding", "Party", "Office", "Festive"],
+            default=["Casual"])
+        photo = st.file_uploader("Upload clothing photo (optional)",
+                                 type=["jpg", "jpeg", "png", "webp"])
+        save = st.form_submit_button("💗 Save Clothing")
 
-    st.subheader("Recommended outfits")
-    for index, (_, label, items) in enumerate(pairs[:5], start=1):
-        with st.container(border=True):
-            st.markdown(f"### {index}. {label}")
-            for item in items:
-                if item[6] and os.path.exists(item[6]):
-                    st.image(item[6], width=180)
-                st.write(
-                    f"{item[1]} — {item[3]} colour, {item[4]} style"
+    if save:
+        if not name.strip():
+            st.error("Enter a name for your clothing item.")
+        elif not occasions:
+            st.error("Select at least one occasion.")
+        else:
+            image = photo.getvalue() if photo else None
+            with connect() as con:
+                con.execute(
+                    """INSERT INTO clothes(uid,name,category,color,style,occasions,photo)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (uid, name.strip(), category, color, style,
+                     ",".join(occasions), image)
                 )
+            st.success("Clothing saved!")
+            st.rerun()
 
-            left, right = st.columns(2)
-            with left:
-                if st.button("👍 Like", key=f"like_{index}_{label}"):
-                    query_db("""
-                        INSERT INTO feedback
-                        (username, outfit, rating, created_at)
-                        VALUES (?, ?, ?, ?)
-                    """, (
-                        username, label, "Like",
-                        datetime.now().isoformat(timespec="seconds")
-                    ))
-                    st.success("Feedback saved!")
-                    st.rerun()
+    clothes = get_clothes(uid)
+    st.markdown(f"## Your saved clothes ({len(clothes)})")
 
-            with right:
-                if st.button("👎 Dislike", key=f"dislike_{index}_{label}"):
-                    query_db("""
-                        INSERT INTO feedback
-                        (username, outfit, rating, created_at)
-                        VALUES (?, ?, ?, ?)
-                    """, (
-                        username, label, "Dislike",
-                        datetime.now().isoformat(timespec="seconds")
-                    ))
-                    st.success("Feedback saved!")
-                    st.rerun()
-
-    st.caption(
-        "This version uses rule-based filtering and simple colour/style "
-        "rules. It does not yet use CLIP or a trained machine-learning model."
-    )
+    if not clothes:
+        st.info("Your wardrobe is empty. Add your first clothing item above.")
+    else:
+        cols = st.columns(3)
+        for i, item in enumerate(clothes):
+            with cols[i % 3]:
+                with st.container(border=True):
+                    if item[6]:
+                        st.image(item[6], use_container_width=True)
+                    else:
+                        st.markdown("## 👚")
+                    st.subheader(item[1])
+                    st.write(f"{item[2]} · {item[3]}")
+                    st.caption(f"Style: {item[4]}")
+                    st.caption(f"Occasions: {item[5]}")
+                    if st.button("🗑️ Delete", key=f"del{item[0]}"):
+                        with connect() as con:
+                            con.execute("DELETE FROM clothes WHERE id=? AND uid=?",
+                                        (item[0], uid))
+                        st.rerun()
 
 
-def feedback_page(username):
-    st.header("💬 My Feedback")
-    rows = query_db("""
-        SELECT outfit, rating, created_at
-        FROM feedback WHERE username=?
-        ORDER BY id DESC
-    """, (username,), True)
+# PAGE 3: FEEDBACK
+elif page == "💗 My Feedback":
+    st.markdown("""
+    <div class="hero">
+    <h1>💗 My Feedback</h1>
+    <p>Review the likes and dislikes you gave to your outfit suggestions.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if not rows:
-        st.info("No feedback yet. Like or dislike a recommendation first.")
-        return
+    feedback = get_feedback(uid)
+    if not feedback:
+        st.info("No feedback yet. Go to Outfit Suggestions and select Like or Dislike.")
+    else:
+        st.metric("Total feedback", len(feedback))
+        for occasion, outfit, rating, date in feedback:
+            with st.container(border=True):
+                st.write("💗" if rating == "Like" else "👎", rating)
+                st.subheader(outfit)
+                st.caption(f"{occasion} · {date}")
 
-    for outfit, rating, created_at in rows:
-        st.write(f"**{rating}** — {outfit}")
-        st.caption(created_at)
-
-
-def main():
-    st.sidebar.title("👗 AI Wardrobe")
-    st.sidebar.caption("Virtual Fashion Assistant")
-
-    username = st.session_state.get("username")
-
-    if not username:
-        login_screen()
-        return
-
-    st.sidebar.success(f"Logged in as {username}")
-    page = st.sidebar.radio(
-        "Navigate",
-        ["Home", "My Wardrobe", "Recommendations", "My Feedback"]
-    )
-
-    if st.sidebar.button("Logout"):
-        del st.session_state["username"]
-        st.rerun()
-
-    if page == "Home":
-        st.title("Welcome to AI Wardrobe ✨")
-        st.write(
-            "Plan outfits using clothes already in your digital wardrobe."
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("### 👚 Digital Wardrobe")
-            st.write("Add clothing details and optional photos.")
-        with c2:
-            st.markdown("### 🎨 Outfit Matching")
-            st.write("Filter by occasion, colour and style.")
-        st.markdown("### 🧠 Feedback")
-        st.write("Like or dislike recommendations to adjust future ranking.")
-        st.info(
-            "Demo notice: this is a rule-based prototype. "
-            "CLIP image recognition and secure production login "
-            "are not implemented yet."
-        )
-
-    elif page == "My Wardrobe":
-        wardrobe_page(username)
-    elif page == "Recommendations":
-        recommendation_page(username)
-    elif page == "My Feedback":
-        feedback_page(username)
-
-
-main()
+st.divider()
+st.caption("AI Wardrobe · Prototype uses rule-based outfit matching and saved feedback.")
