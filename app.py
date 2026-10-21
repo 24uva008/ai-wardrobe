@@ -11,8 +11,10 @@ from itertools import combinations
 
 st.set_page_config(page_title="AI Wardrobe", page_icon="🎀", layout="wide")
 
-DB = "wardrobe.db"
-os.makedirs("wardrobe_images", exist_ok=True)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB = os.path.join(BASE_DIR, "wardrobe.db")
+IMG_DIR = os.path.join(BASE_DIR, "wardrobe_images")
+os.makedirs(IMG_DIR, exist_ok=True)
 
 st.markdown("""
 <style>
@@ -32,8 +34,17 @@ padding:24px;border-radius:22px;margin-bottom:20px;}
 """, unsafe_allow_html=True)
 
 
+# ---------------- DATABASE ----------------
+def add_missing_columns(con, table, wanted):
+    """Adds columns that are missing in an older existing table."""
+    existing = [r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()]
+    for col, col_type in wanted.items():
+        if col not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+
+
 def db_connect():
-    con = sqlite3.connect(DB, check_same_thread=False)
+    con = sqlite3.connect(DB, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("""
     CREATE TABLE IF NOT EXISTS users(
@@ -48,23 +59,51 @@ def db_connect():
         clip_vector TEXT
     )""")
     con.execute("""
-CREATE TABLE IF NOT EXISTS feedback(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT,
-    outfit_key TEXT,
-    rating INTEGER
-)""")
+    CREATE TABLE IF NOT EXISTS feedback(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        outfit_key TEXT,
+        rating INTEGER
+    )""")
+    add_missing_columns(con, "users", {"password": "TEXT"})
+    add_missing_columns(con, "clothes", {
+        "username": "TEXT", "name": "TEXT", "category": "TEXT",
+        "color": "TEXT", "style": "TEXT", "occasions": "TEXT",
+        "image_path": "TEXT", "clip_vector": "TEXT"})
+    add_missing_columns(con, "feedback", {
+        "username": "TEXT", "outfit_key": "TEXT", "rating": "INTEGER"})
     con.commit()
     return con
 
 
-con = db_connect()
+try:
+    con = db_connect()
+except Exception as e:
+    st.error("Database could not be opened.")
+    st.code(f"{type(e).__name__}: {e}")
+    st.info("Send this exact message to your guide/assistant to fix it.")
+    st.stop()
 
 
 def pw_hash(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def full_path(p):
+    if not p:
+        return ""
+    return p if os.path.isabs(p) else os.path.join(BASE_DIR, p)
+
+
+def show_image(path):
+    """Works on both old and new Streamlit versions."""
+    try:
+        st.image(path, width="stretch")
+    except TypeError:
+        st.image(path, use_container_width=True)
+
+
+# ---------------- CLIP ----------------
 @st.cache_resource(show_spinner="Loading CLIP AI model. First load may take time...")
 def get_clip():
     from transformers import CLIPModel, CLIPProcessor
@@ -82,6 +121,8 @@ def extract_clip(image_bytes):
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
+        if not hasattr(features, "norm"):  # newer versions may return an object
+            features = features.pooler_output
         features = features / features.norm(p=2, dim=-1, keepdim=True)
     return features[0].cpu().numpy().tolist()
 
@@ -92,6 +133,7 @@ def similarity(a, b):
     return float(np.dot(a, b) / denom) if denom else 0.0
 
 
+# ---------------- HEADER ----------------
 st.markdown("""
 <div class="hero">
 <h1>🎀 AI Wardrobe</h1>
@@ -103,7 +145,7 @@ st.markdown("""
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# LOGIN AND REGISTRATION
+# ---------------- LOGIN AND REGISTRATION ----------------
 if st.session_state.user is None:
     tab_login, tab_register = st.tabs(["Login", "Register"])
 
@@ -130,8 +172,16 @@ if st.session_state.user is None:
                     )
                     con.commit()
                     st.success("Account created! Now select the Login tab.")
-                except sqlite3.IntegrityError:
-                    st.error("Username already exists. Choose another.")
+                except sqlite3.IntegrityError as e:
+                    msg = str(e).upper()
+                    if "UNIQUE" in msg or "PRIMARY KEY" in msg:
+                        st.error("Username already exists. Choose another.")
+                    else:
+                        st.error("Database constraint error:")
+                        st.code(str(e))
+                except sqlite3.Error as e:
+                    st.error("Database error (send this message to fix it):")
+                    st.code(f"{type(e).__name__}: {e}")
 
     with tab_login:
         st.subheader("Welcome back 💕")
@@ -141,16 +191,19 @@ if st.session_state.user is None:
             login = st.form_submit_button("Login")
 
         if login:
-            result = con.execute(
-                "SELECT * FROM users WHERE username=? AND password=?",
-                (login_user.strip(), pw_hash(login_password))
-            ).fetchone()
-
-            if result:
-                st.session_state.user = login_user.strip()
-                st.rerun()
-            else:
-                st.error("Incorrect username or password. Register first if needed.")
+            try:
+                result = con.execute(
+                    "SELECT * FROM users WHERE username=? AND password=?",
+                    (login_user.strip(), pw_hash(login_password))
+                ).fetchone()
+                if result:
+                    st.session_state.user = login_user.strip()
+                    st.rerun()
+                else:
+                    st.error("Incorrect username or password. Register first if needed.")
+            except sqlite3.Error as e:
+                st.error("Database error (send this message to fix it):")
+                st.code(f"{type(e).__name__}: {e}")
 
     st.stop()
 
@@ -169,7 +222,7 @@ with st.sidebar:
         st.rerun()
 
 
-# MY WARDROBE
+# ---------------- MY WARDROBE ----------------
 if page == "My Wardrobe":
     st.title("👗 My Wardrobe")
     st.write("Upload and save clothing images here.")
@@ -200,31 +253,35 @@ if page == "My Wardrobe":
         if image_file is None or not name.strip():
             st.warning("Enter a clothing name and upload an image.")
         else:
-            image_bytes = image_file.getvalue()
-            filename = f"{user}_{os.urandom(5).hex()}.jpg"
-            path = os.path.join("wardrobe_images", filename)
-            Image.open(io.BytesIO(image_bytes)).convert("RGB").save(path)
-
-            vector_text = ""
             try:
-                with st.spinner("CLIP is extracting image features..."):
-                    vector_text = json.dumps(extract_clip(image_bytes))
-                st.success("CLIP image features extracted!")
-            except Exception as e:
-                st.warning("Image saved, but CLIP could not load. Check requirements.txt.")
-                st.caption(str(e))
+                image_bytes = image_file.getvalue()
+                filename = f"{user}_{os.urandom(5).hex()}.jpg"
+                path = os.path.join(IMG_DIR, filename)
+                Image.open(io.BytesIO(image_bytes)).convert("RGB").save(path)
 
-            con.execute("""
-                INSERT INTO clothes
-                (username,name,category,color,style,occasions,image_path,clip_vector)
-                VALUES(?,?,?,?,?,?,?,?)
-            """, (
-                user, name.strip(), category, color, style,
-                ", ".join(occasions) if occasions else "Any",
-                path, vector_text
-            ))
-            con.commit()
-            st.success("Clothing saved to your wardrobe!")
+                vector_text = ""
+                try:
+                    with st.spinner("CLIP is extracting image features..."):
+                        vector_text = json.dumps(extract_clip(image_bytes))
+                    st.success("CLIP image features extracted!")
+                except Exception as e:
+                    st.warning("Image saved, but CLIP could not load. Check requirements.txt.")
+                    st.caption(str(e))
+
+                con.execute("""
+                    INSERT INTO clothes
+                    (username,name,category,color,style,occasions,image_path,clip_vector)
+                    VALUES(?,?,?,?,?,?,?,?)
+                """, (
+                    user, name.strip(), category, color, style,
+                    ", ".join(occasions) if occasions else "Any",
+                    os.path.join("wardrobe_images", filename), vector_text
+                ))
+                con.commit()
+                st.success("Clothing saved to your wardrobe!")
+            except Exception as e:
+                st.error("Could not save clothing:")
+                st.code(f"{type(e).__name__}: {e}")
 
     clothes = con.execute(
         "SELECT * FROM clothes WHERE username=? ORDER BY id DESC", (user,)
@@ -237,16 +294,17 @@ if page == "My Wardrobe":
         cols = st.columns(3)
         for i, item in enumerate(clothes):
             with cols[i % 3]:
-                if os.path.exists(item["image_path"]):
-                    st.image(item["image_path"], use_container_width=True)
+                p = full_path(item["image_path"])
+                if p and os.path.exists(p):
+                    show_image(p)
                 st.markdown(f"**{item['name']}**")
                 st.caption(
                     f"{item['category']} · {item['color']} · {item['style']}"
                 )
-                st.caption("Occasions: " + item["occasions"])
+                st.caption("Occasions: " + (item["occasions"] or "Any"))
                 if st.button("Delete", key=f"delete_{item['id']}"):
-                    if os.path.exists(item["image_path"]):
-                        os.remove(item["image_path"])
+                    if p and os.path.exists(p):
+                        os.remove(p)
                     con.execute(
                         "DELETE FROM clothes WHERE id=? AND username=?",
                         (item["id"], user)
@@ -255,7 +313,7 @@ if page == "My Wardrobe":
                     st.rerun()
 
 
-# OUTFIT SUGGESTIONS
+# ---------------- OUTFIT SUGGESTIONS ----------------
 elif page == "Find Your Outfit":
     st.title("✨ Find Your Outfit")
     st.write("Choose an occasion to find combinations from your saved clothes.")
@@ -285,7 +343,7 @@ elif page == "Find Your Outfit":
 
         eligible = []
         for item in clothes:
-            allowed = [x.strip().lower() for x in item["occasions"].split(",")]
+            allowed = [x.strip().lower() for x in (item["occasions"] or "Any").split(",")]
             if occasion != "Any" and "any" not in allowed and occasion.lower() not in allowed:
                 continue
             if style_filter != "Any" and item["style"] not in (style_filter, "Any"):
@@ -307,11 +365,11 @@ elif page == "Find Your Outfit":
             ).fetchall()
             scores = {}
             for row in feedback:
-                scores[row["outfit_key"]] = scores.get(row["outfit_key"], 0) + row["rating"]
+                scores[row["outfit_key"]] = scores.get(row["outfit_key"], 0) + (row["rating"] or 0)
 
             ranked = []
             for a, b in pairs:
-                key = f"{min(a['id'],b['id'])}-{max(a['id'],b['id'])}"
+                key = f"{min(a['id'], b['id'])}-{max(a['id'], b['id'])}"
                 bonus = sum(
                     1 for x in (a, b)
                     if color_filter != "Any" and x["color"] == color_filter
@@ -324,7 +382,7 @@ elif page == "Find Your Outfit":
                         sim = similarity(va, vb)
                 except Exception:
                     pass
-                score = scores.get(key, 0) + bonus
+                score = scores.get(key, 0) * 2 + bonus + (0.3 * sim if sim is not None else 0)
                 ranked.append((score, key, a, b, sim))
 
             ranked.sort(key=lambda x: x[0], reverse=True)
@@ -334,12 +392,14 @@ elif page == "Find Your Outfit":
                 st.subheader(f"Outfit idea {n}")
                 left, right = st.columns(2)
                 with left:
-                    if os.path.exists(a["image_path"]):
-                        st.image(a["image_path"], use_container_width=True)
+                    pa = full_path(a["image_path"])
+                    if pa and os.path.exists(pa):
+                        show_image(pa)
                     st.write(f"**{a['name']}** · {a['color']}")
                 with right:
-                    if os.path.exists(b["image_path"]):
-                        st.image(b["image_path"], use_container_width=True)
+                    pb = full_path(b["image_path"])
+                    if pb and os.path.exists(pb):
+                        show_image(pb)
                     st.write(f"**{b['name']}** · {b['color']}")
 
                 if sim is not None:
@@ -349,43 +409,56 @@ elif page == "Find Your Outfit":
                 with f1:
                     if st.button("👍 Like", key=f"like_{key}_{n}"):
                         con.execute(
+                            "DELETE FROM feedback WHERE username=? AND outfit_key=?",
+                            (user, key))
+                        con.execute(
                             "INSERT INTO feedback(username,outfit_key,rating) VALUES(?,?,?)",
-                            (user, key, 1)
-                        )
+                            (user, key, 1))
                         con.commit()
-                        st.success("Feedback saved!")
                         st.rerun()
                 with f2:
                     if st.button("👎 Dislike", key=f"dislike_{key}_{n}"):
                         con.execute(
+                            "DELETE FROM feedback WHERE username=? AND outfit_key=?",
+                            (user, key))
+                        con.execute(
                             "INSERT INTO feedback(username,outfit_key,rating) VALUES(?,?,?)",
-                            (user, key, -1)
-                        )
+                            (user, key, -1))
                         con.commit()
-                        st.success("Feedback saved!")
                         st.rerun()
 
     st.caption(
-    "Prototype: occasion filtering uses rules. CLIP extracts visual image features; "
-    "cosine similarity compares vectors. It does not guarantee fashion compatibility."
+        "Prototype: occasion filtering uses rules. CLIP extracts visual image features; "
+        "cosine similarity compares vectors. It does not guarantee fashion compatibility."
     )
 
 
-# FEEDBACK HISTORY
+# ---------------- FEEDBACK HISTORY ----------------
 else:
     st.title("💌 My Feedback")
     rows = con.execute(
-        "SELECT outfit_key,rating FROM feedback WHERE username=?",
+        "SELECT outfit_key,rating FROM feedback WHERE username=? ORDER BY id DESC",
         (user,)
     ).fetchall()
 
     if not rows:
         st.info("No feedback yet. Like or dislike an outfit first.")
     else:
+        names = {
+            r["id"]: r["name"]
+            for r in con.execute(
+                "SELECT id,name FROM clothes WHERE username=?", (user,)
+            ).fetchall()
+        }
         st.metric("Feedback submitted", len(rows))
         for row in rows:
-            label = "👍 Liked" if row["rating"] > 0 else "👎 Disliked"
-            st.write(f"{label} — Outfit IDs: {row['outfit_key']}")
+            label = "👍 Liked" if (row["rating"] or 0) > 0 else "👎 Disliked"
+            try:
+                ida, idb = [int(x) for x in row["outfit_key"].split("-")]
+                text = f"{names.get(ida, 'Deleted item')} + {names.get(idb, 'Deleted item')}"
+            except Exception:
+                text = str(row["outfit_key"])
+            st.write(f"{label} — {text}")
 
 st.markdown("---")
 st.caption("AI Wardrobe · CLIP + cosine similarity + rule-based filtering + feedback")
