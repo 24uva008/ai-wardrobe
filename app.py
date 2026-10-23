@@ -26,7 +26,9 @@ h1,h2,h3 {color:#ad3974;}
 background:#e65b9b;color:white;border:0;border-radius:12px;font-weight:600;width:100%;
 }
 .stButton>button:hover {background:#c83c80;color:white;}
-.hero {background:linear-gradient(120deg,#ffd4e7,#fff0f7);padding:24px;border-radius:22px;margin-bottom:20px;}
+.hero {background:linear-gradient(120deg,#ffd4e7,#fff0f7);padding:22px;border-radius:22px;margin-bottom:18px;}
+[data-testid="stImage"] img {object-fit:contain;border-radius:12px;}
+[data-testid="stVerticalBlockBorderWrapper"] {border-color:#f3c4da !important;border-radius:14px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -79,11 +81,10 @@ def full_path(path):
     return path if os.path.isabs(path) else os.path.join(BASE_DIR, path)
 
 
-def show_image(path):
-    try:
-        st.image(path, width="stretch")
-    except TypeError:
-        st.image(path, use_container_width=True)
+def show_image(path, width=180):
+    """Display wardrobe photos at a compact, consistent size."""
+    if path and os.path.exists(path):
+        st.image(path, width=width)
 
 
 # ---------------- CLIP MODEL ----------------
@@ -176,28 +177,38 @@ def recommended_occasions(category, style):
 
 
 def is_suitable(item, occasion):
-    """Hard rules stop clearly unsuitable clothing being recommended for an occasion."""
+    """Strict occasion/category/style rules, with saved occasion tags as an extra check."""
     category = (item["category"] or "Other").strip()
     style = (item["style"] or "Casual").strip()
     name = (item["name"] or "").lower()
-    # Help older records whose category is only 'Dress' but whose name says saree.
+    saved = [x.strip().lower() for x in (item["occasions"] or "Any").split(",")]
+
+    # Handle older records whose category is generic but whose name identifies a saree.
     if "saree" in name or "sari" in name:
         category = "Saree"
+
+    # Occasion = Any only skips occasion rules; it never makes an unknown item a match.
     if occasion == "Any":
         return category != "Other"
+
+    # If a record has specific occasion tags, use them. Older "Any" records are
+    # still checked by the strict category/style rules below.
+    if "any" not in saved and saved and occasion.lower() not in saved:
+        return False
+
     if occasion == "College":
         return category in TOP_CATEGORIES | BOTTOM_CATEGORIES | EXTRAS and style in {"Casual", "Formal", "Traditional"}
     if occasion == "Office":
-        return category in {"Top", "Shirt", "Bottom", "Trousers", "Footwear", "Accessory"} and style == "Formal"
+        return category in {"Top", "Shirt", "T-shirt", "Bottom", "Jeans", "Trousers", "Footwear", "Accessory"} and style == "Formal"
     if occasion == "Casual outing":
-        return category in TOP_CATEGORIES | BOTTOM_CATEGORIES | {"Dress", "One-piece", "Footwear", "Accessory"} and style in {"Casual", "Party", "Traditional"}
+        return category in TOP_CATEGORIES | BOTTOM_CATEGORIES | {"Dress", "One-piece", "Footwear", "Accessory"} and style == "Casual"
     if occasion == "Wedding":
-        return category in {"Saree", "Dress", "One-piece", "Kurti", "Top", "Bottom", "Footwear", "Accessory"} and style in {"Traditional", "Grand", "Party", "Formal"}
+        return category in {"Saree", "Dress", "One-piece", "Kurti", "Top", "Shirt", "Bottom", "Jeans", "Trousers", "Footwear", "Accessory"} and style in {"Traditional", "Grand", "Party"}
     if occasion == "Party":
-        return category in {"Top", "Shirt", "T-shirt", "Bottom", "Jeans", "Trousers", "Dress", "One-piece", "Footwear", "Accessory"} and style in {"Casual", "Party", "Grand", "Formal"}
+        return category in {"Top", "Shirt", "T-shirt", "Bottom", "Jeans", "Trousers", "Dress", "One-piece", "Footwear", "Accessory"} and style in {"Party", "Grand"}
     if occasion == "Festival":
-        return category in {"Saree", "Kurti", "Dress", "One-piece", "Top", "Bottom", "Footwear", "Accessory"} and style in {"Traditional", "Grand", "Casual", "Party"}
-    return True
+        return category in {"Saree", "Kurti", "Dress", "One-piece", "Top", "Bottom", "Footwear", "Accessory"} and style in {"Traditional", "Grand", "Party"}
+    return False
 
 
 def colour_harmony(a, b):
@@ -304,120 +315,129 @@ with st.sidebar:
 # ---------------- MY WARDROBE ----------------
 if page == "My Wardrobe":
     st.title("👗 My Wardrobe")
-    st.write("Select multiple clothing photos together. Type, colour and style are estimated automatically.")
+    st.write("Upload multiple photos together, then confirm the type, colour, style and suitable occasions for each photo.")
+    st.caption("These details help the system avoid mistakes such as saree for office or two bottoms in one outfit.")
+
     uploaded_files = st.file_uploader(
-        "Choose multiple clothing photos",
+        "Choose clothing photos",
         type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key="wardrobe_uploads"
     )
 
-    if uploaded_files and st.button("Analyse and save all photos", type="primary"):
-        progress = st.progress(0)
-        saved_count = 0
+    if uploaded_files:
+        st.subheader("Confirm each clothing item")
+        occasion_options = ["College", "Office", "Wedding", "Party", "Casual outing", "Festival"]
+        upload_meta = []
         for index, uploaded in enumerate(uploaded_files):
-            image_bytes = uploaded.getvalue()
             base_name = os.path.splitext(uploaded.name)[0].replace("_", " ").replace("-", " ").strip()
-            item_name = base_name.title() if base_name else f"Clothing {index + 1}"
-            try:
-                image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                filename = f"{hashlib.sha256((user + uploaded.name + str(index)).encode()).hexdigest()[:16]}.jpg"
-                path = os.path.join(IMG_DIR, filename)
-                image.save(path, format="JPEG", quality=92)
+            default_name = base_name.title() if base_name else f"Clothing {index + 1}"
+            with st.container(border=True):
+                image_col, details_col = st.columns([1, 3])
+                with image_col:
+                    try:
+                        preview = Image.open(io.BytesIO(uploaded.getvalue())).convert("RGB")
+                        st.image(preview, width=130)
+                    except Exception:
+                        st.warning("Preview unavailable")
+                with details_col:
+                    st.markdown(f"**Photo {index + 1}: {uploaded.name}**")
+                    name = st.text_input("Clothing name", value=default_name, key=f"upload_name_{index}")
+                    a, b, c = st.columns(3)
+                    with a:
+                        category = st.selectbox("Category / Type", ["Select category"] + CATEGORIES,
+                            key=f"upload_cat_{index}")
+                    with b:
+                        color = st.selectbox("Colour", ["Select colour"] + COLORS,
+                            key=f"upload_color_{index}")
+                    with c:
+                        style = st.selectbox("Style", ["Select style"] + STYLES,
+                            key=f"upload_style_{index}")
+                    occasions = st.multiselect(
+                        "Suitable occasions (select all that apply)", occasion_options,
+                        default=[], key=f"upload_occ_{index}"
+                    )
+                    upload_meta.append((name, category, color, style, occasions))
 
-                # Defaults allow saving even if the model is not available.
-                category, style, vector_text = "Other", "Casual", ""
-                try:
-                    detected_category, _ = clip_classify(image_bytes, [
-                        "a casual top", "a shirt or blouse", "a t-shirt",
-                        "a kurti or salwar kameez", "jeans", "trousers or pants",
-                        "a saree", "a dress", "a one-piece outfit",
-                        "footwear", "a handbag or fashion accessory", "other clothing"
-                    ])
-                    category_map = {
-                        "a casual top": "Top", "a shirt or blouse": "Shirt",
-                        "a t-shirt": "T-shirt", "a kurti or salwar kameez": "Kurti",
-                        "jeans": "Jeans", "trousers or pants": "Trousers",
-                        "a saree": "Saree", "a dress": "Dress",
-                        "a one-piece outfit": "One-piece", "footwear": "Footwear",
-                        "a handbag or fashion accessory": "Accessory", "other clothing": "Other"
-                    }
-                    category = category_map.get(detected_category, "Other")
-                    detected_style, _ = clip_classify(image_bytes, [
-                        "casual everyday clothing", "formal office clothing",
-                        "traditional Indian clothing", "grand wedding clothing",
-                        "party wear clothing"
-                    ])
-                    style_map = {
-                        "casual everyday clothing": "Casual",
-                        "formal office clothing": "Formal",
-                        "traditional Indian clothing": "Traditional",
-                        "grand wedding clothing": "Grand",
-                        "party wear clothing": "Party"
-                    }
-                    style = style_map.get(detected_style, "Casual")
-                    vector_text = json.dumps(get_image_vector(image_bytes))
-                except Exception:
-                    # Still save the photo if CLIP is unavailable.
-                    pass
+        if st.button("💾 Save all clothing", type="primary", use_container_width=True):
+            missing = [str(i + 1) for i, meta in enumerate(upload_meta)
+                       if meta[1] == "Select category" or meta[2] == "Select colour" or meta[3] == "Select style"]
+            if missing:
+                st.error("Please select Category, Colour and Style for every photo. Photo number(s): " + ", ".join(missing))
+            else:
+                progress = st.progress(0)
+                saved_count = 0
+                for index, uploaded in enumerate(uploaded_files):
+                    try:
+                        image_bytes = uploaded.getvalue()
+                        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                        filename = f"{hashlib.sha256((user + uploaded.name + str(index) + str(os.urandom(4))).encode()).hexdigest()[:20]}.jpg"
+                        path = os.path.join(IMG_DIR, filename)
+                        image.save(path, format="JPEG", quality=90, optimize=True)
 
-                color = dominant_color(image_bytes)
-                occasions = recommended_occasions(category, style)
-                con.execute("""
-                    INSERT INTO clothes
-                    (username,name,category,color,style,occasions,image_path,clip_vector)
-                    VALUES(?,?,?,?,?,?,?,?)
-                """, (user, item_name, category, color, style, ", ".join(occasions),
-                      os.path.join("wardrobe_images", filename), vector_text))
-                con.commit()
-                saved_count += 1
-            except Exception as e:
-                st.warning(f"Could not save {uploaded.name}: {e}")
-            progress.progress((index + 1) / len(uploaded_files))
-        st.success(f"Saved {saved_count} of {len(uploaded_files)} photo(s).")
-        st.info("AI labels are estimates. Check the details below and use Edit details if a label is wrong.")
-        st.rerun()
+                        name, category, color, style, selected_occasions = upload_meta[index]
+                        if not selected_occasions:
+                            selected_occasions = recommended_occasions(category, style)
+                        vector_text = ""
+                        try:
+                            vector_text = json.dumps(get_image_vector(image_bytes))
+                        except Exception:
+                            # Recommendations still work using the chosen labels and rules if CLIP is unavailable.
+                            pass
 
-    clothes = con.execute(
-        "SELECT * FROM clothes WHERE username=? ORDER BY id DESC", (user,)
-    ).fetchall()
+                        con.execute("""INSERT INTO clothes
+                            (username,name,category,color,style,occasions,image_path,clip_vector)
+                            VALUES(?,?,?,?,?,?,?,?)""",
+                            (user, name.strip() or f"Clothing {index + 1}", category, color, style,
+                             ", ".join(selected_occasions), os.path.join("wardrobe_images", filename), vector_text))
+                        con.commit()
+                        saved_count += 1
+                    except Exception as e:
+                        st.warning(f"Could not save {uploaded.name}: {type(e).__name__}: {e}")
+                    progress.progress((index + 1) / len(uploaded_files))
+                st.success(f"Saved {saved_count} of {len(uploaded_files)} photo(s).")
+                st.rerun()
+
+    clothes = con.execute("SELECT * FROM clothes WHERE username=? ORDER BY id DESC", (user,)).fetchall()
     st.subheader(f"My saved clothes ({len(clothes)})")
     if not clothes:
-        st.info("Upload some clothing photos to start your digital wardrobe.")
+        st.info("Upload clothing photos above to start your digital wardrobe.")
     else:
         for item in clothes:
             with st.container(border=True):
-                col1, col2 = st.columns([1, 2])
-                with col1:
+                image_col, details_col = st.columns([1, 3])
+                with image_col:
                     p = full_path(item["image_path"])
                     if p and os.path.exists(p):
-                        show_image(p)
-                with col2:
+                        show_image(p, width=150)
+                with details_col:
                     st.markdown(f"**{item['name']}**")
-                    st.write(f"Type: {item['category']} · Colour: {item['color']} · Style: {item['style']}")
-                    st.caption("Suggested occasions: " + (item["occasions"] or "Casual outing"))
-                    with st.expander("Edit details if AI guessed incorrectly"):
+                    st.write(f"Type: {item['category']}  ·  Colour: {item['color']}  ·  Style: {item['style']}")
+                    st.caption("Suitable for: " + (item["occasions"] or "Not set"))
+                    with st.expander("✏️ Edit details"):
                         with st.form(f"edit_{item['id']}"):
                             edit_name = st.text_input("Clothing name", value=item["name"] or "")
-                            edit_category = st.selectbox(
-                                "Type", CATEGORIES,
-                                index=CATEGORIES.index(item["category"] if item["category"] in CATEGORIES else "Other"))
-                            colors = COLORS
-                            edit_color = st.selectbox("Colour", colors,
-                                index=colors.index(item["color"]) if item["color"] in colors else 0)
-                            styles = STYLES
-                            edit_style = st.selectbox("Style", styles,
-                                index=styles.index(item["style"]) if item["style"] in styles else 0)
+                            edit_category = st.selectbox("Category / Type", CATEGORIES,
+                                index=CATEGORIES.index(item["category"]) if item["category"] in CATEGORIES else CATEGORIES.index("Other"))
+                            edit_color = st.selectbox("Colour", COLORS,
+                                index=COLORS.index(item["color"]) if item["color"] in COLORS else 0)
+                            edit_style = st.selectbox("Style", STYLES,
+                                index=STYLES.index(item["style"]) if item["style"] in STYLES else 0)
+                            current_occasions = [x.strip() for x in (item["occasions"] or "").split(",") if x.strip() in occasion_options]
+                            edit_occasions = st.multiselect("Suitable occasions", occasion_options,
+                                default=current_occasions, key=f"edit_occ_{item['id']}")
                             edit_save = st.form_submit_button("Save corrections")
                         if edit_save:
-                            new_occasions = recommended_occasions(edit_category, edit_style)
+                            if not edit_occasions:
+                                edit_occasions = recommended_occasions(edit_category, edit_style)
                             con.execute("""UPDATE clothes SET name=?,category=?,color=?,style=?,occasions=?
                                            WHERE id=? AND username=?""",
-                                        (edit_name.strip() or item["name"], edit_category, edit_color,
-                                         edit_style, ", ".join(new_occasions), item["id"], user))
+                                (edit_name.strip() or item["name"], edit_category, edit_color, edit_style,
+                                 ", ".join(edit_occasions), item["id"], user))
                             con.commit()
-                            st.success("Details updated.")
+                            st.success("Clothing details updated.")
                             st.rerun()
-                    if st.button("Delete", key=f"delete_{item['id']}"):
+                    if st.button("🗑️ Delete item", key=f"delete_{item['id']}"):
                         p = full_path(item["image_path"])
                         if p and os.path.exists(p):
                             os.remove(p)
@@ -429,110 +449,118 @@ if page == "My Wardrobe":
 # ---------------- FIND YOUR OUTFIT ----------------
 elif page == "Find Your Outfit":
     st.title("✨ Find Your Outfit")
-    st.write("Occasion rules filter clothes first; colour compatibility and your feedback rank the combinations next.")
+    st.write("Choose your occasion and preferences. The app filters unsuitable items before creating combinations.")
     clothes = con.execute("SELECT * FROM clothes WHERE username=?", (user,)).fetchall()
 
-    if len(clothes) < 2:
-        st.info("Open My Wardrobe and save at least two clothing items first.")
+    if len(clothes) < 1:
+        st.info("Open My Wardrobe and upload your clothing photos first.")
     else:
         c1, c2 = st.columns(2)
         with c1:
-            occasion = st.selectbox("Occasion", ["College", "Office", "Wedding", "Party", "Casual outing", "Festival", "Any"])
+            occasion = st.selectbox("1. Occasion", ["College", "Office", "Wedding", "Party", "Casual outing", "Festival", "Any"])
+            style_filter = st.selectbox("2. Preferred style", ["Any"] + STYLES)
         with c2:
-            color_filter = st.selectbox("Preferred colour (boosts matching; does not exclude other colours)", ["Any"] + COLORS)
+            color_filter = st.selectbox("3. Preferred colour", ["Any"] + COLORS)
+            outfit_type = st.selectbox("4. Outfit type", ["Complete outfit (Top + Bottom)", "One-piece (Saree / Dress)", "Any complete outfit"])
 
         eligible = [item for item in clothes if is_suitable(item, occasion)]
-        if not eligible:
-            st.warning("No clothes currently match this occasion. Open My Wardrobe → Edit details and correct the clothing type/style, or choose another occasion.")
-        else:
-            tops = [x for x in eligible if x["category"] in TOP_CATEGORIES]
-            bottoms = [x for x in eligible if x["category"] in BOTTOM_CATEGORIES]
-            one_pieces = [x for x in eligible if x["category"] in ONE_PIECE_CATEGORIES]
-            extras = [x for x in eligible if x["category"] in EXTRAS]
+        if style_filter != "Any":
+            eligible = [item for item in eligible if item["style"] == style_filter]
+        if color_filter != "Any":
+            # Preference is a ranking boost, not a hard filter, so compatible colours can still match.
+            pass
 
-            # Proper combinations: top + bottom; one-piece outfit + accessory/footwear.
-            outfit_pairs = [(a, b) for a in tops for b in bottoms if a["id"] != b["id"]]
-            for item in one_pieces:
-                if extras:
-                    outfit_pairs.extend((item, extra) for extra in extras)
+        tops = [x for x in eligible if x["category"] in TOP_CATEGORIES]
+        bottoms = [x for x in eligible if x["category"] in BOTTOM_CATEGORIES]
+        one_pieces = [x for x in eligible if x["category"] in ONE_PIECE_CATEGORIES]
+        extras = [x for x in eligible if x["category"] in EXTRAS]
+
+        outfit_pairs = []
+        if outfit_type in {"Complete outfit (Top + Bottom)", "Any complete outfit"}:
+            outfit_pairs.extend((top, bottom) for top in tops for bottom in bottoms if top["id"] != bottom["id"])
+        if outfit_type in {"One-piece (Saree / Dress)", "Any complete outfit"}:
+            for piece in one_pieces:
+                matching_extras = [extra for extra in extras if extra["category"] == "Footwear"] or extras
+                if matching_extras:
+                    outfit_pairs.extend((piece, extra) for extra in matching_extras)
                 else:
-                    outfit_pairs.append((item, item))  # single-piece outfit; shown once below
-            # Do not create random saree + jeans or top + footwear combinations.
-            if not outfit_pairs and occasion == "Any":
-                outfit_pairs = [(a, b) for a, b in combinations(eligible, 2)
-                                if not (a["category"] in ONE_PIECE_CATEGORIES and b["category"] in BOTTOM_CATEGORIES)
-                                and not (b["category"] in ONE_PIECE_CATEGORIES and a["category"] in BOTTOM_CATEGORIES)]
+                    outfit_pairs.append((piece, piece))
 
-            # Remove duplicate pairs while preserving their order.
-            unique_pairs = {}
-            for a, b in outfit_pairs:
-                key = f"{min(a['id'], b['id'])}-{max(a['id'], b['id'])}"
-                unique_pairs[key] = (a, b)
+        # Remove duplicates and keep the same clothing item from appearing as both top and bottom.
+        unique_pairs = {}
+        for a, b in outfit_pairs:
+            if a["id"] != b["id"] and a["category"] in BOTTOM_CATEGORIES and b["category"] in BOTTOM_CATEGORIES:
+                continue
+            if a["id"] != b["id"] and a["category"] in TOP_CATEGORIES and b["category"] in TOP_CATEGORIES:
+                continue
+            key = f"{min(a['id'], b['id'])}-{max(a['id'], b['id'])}"
+            unique_pairs[key] = (a, b)
 
-            if not unique_pairs:
-                st.warning("No suitable outfit combination found. Add a top and bottom, or add footwear/accessory for a dress or saree.")
-            else:
-                feedback_rows = con.execute("SELECT outfit_key,rating FROM feedback WHERE username=?", (user,)).fetchall()
-                feedback_scores = {}
-                for row in feedback_rows:
-                    feedback_scores[row["outfit_key"]] = feedback_scores.get(row["outfit_key"], 0) + (row["rating"] or 0)
+        if not unique_pairs:
+            st.warning("No complete combination found for these filters. In My Wardrobe, check each item's category, style and suitable occasions. Add at least one top and one bottom, or a saree/dress for one-piece outfits.")
+        else:
+            feedback_rows = con.execute("SELECT outfit_key,rating FROM feedback WHERE username=?", (user,)).fetchall()
+            feedback_scores = {}
+            for row in feedback_rows:
+                feedback_scores[row["outfit_key"]] = feedback_scores.get(row["outfit_key"], 0) + (row["rating"] or 0)
 
-                ranked = []
-                for key, (a, b) in unique_pairs.items():
-                    colour_score = colour_harmony(a["color"], b["color"]) if a["id"] != b["id"] else 0.5
-                    preferred_bonus = sum(0.35 for item in (a, b)
-                                          if color_filter != "Any" and item["color"] == color_filter)
-                    vector_similarity = None
-                    try:
-                        va = json.loads(a["clip_vector"]) if a["clip_vector"] else None
-                        vb = json.loads(b["clip_vector"]) if b["clip_vector"] else None
-                        if va and vb and a["id"] != b["id"]:
-                            vector_similarity = similarity(va, vb)
-                    except Exception:
-                        pass
-                    score = (feedback_scores.get(key, 0) * 2.0 + colour_score
-                             + preferred_bonus + (0.05 * vector_similarity if vector_similarity is not None else 0))
-                    ranked.append((score, key, a, b, colour_score, vector_similarity))
-                ranked.sort(key=lambda x: x[0], reverse=True)
+            ranked = []
+            for key, (a, b) in unique_pairs.items():
+                colour_score = colour_harmony(a["color"], b["color"]) if a["id"] != b["id"] else 0.5
+                preferred_bonus = sum(0.45 for item in (a, b)
+                                      if color_filter != "Any" and item["color"] == color_filter)
+                vector_similarity = None
+                try:
+                    va = json.loads(a["clip_vector"]) if a["clip_vector"] else None
+                    vb = json.loads(b["clip_vector"]) if b["clip_vector"] else None
+                    if va and vb and a["id"] != b["id"]:
+                        vector_similarity = similarity(va, vb)
+                except Exception:
+                    pass
+                score = feedback_scores.get(key, 0) * 2.0 + colour_score + preferred_bonus
+                ranked.append((score, key, a, b, colour_score, vector_similarity))
+            ranked.sort(key=lambda x: x[0], reverse=True)
 
-                for n, (score, key, a, b, colour_score, vector_similarity) in enumerate(ranked[:8], 1):
-                    st.markdown("---")
-                    st.subheader(f"Outfit idea {n}")
-                    if a["id"] == b["id"]:
-                        p = full_path(a["image_path"])
-                        if p and os.path.exists(p):
-                            show_image(p)
-                        st.write(f"**{a['name']}** · {a['category']} · {a['color']} · {a['style']}")
-                    else:
-                        left, right = st.columns(2)
-                        with left:
-                            p = full_path(a["image_path"])
-                            if p and os.path.exists(p):
-                                show_image(p)
-                            st.write(f"**{a['name']}** · {a['category']} · {a['color']} · {a['style']}")
-                        with right:
-                            p = full_path(b["image_path"])
-                            if p and os.path.exists(p):
-                                show_image(p)
-                            st.write(f"**{b['name']}** · {b['category']} · {b['color']} · {b['style']}")
-                        st.caption(f"Colour compatibility estimate: {colour_score:.2f}")
-                    if vector_similarity is not None:
-                        st.caption(f"Visual similarity signal (not a fashion score): {vector_similarity:.2f}")
-                    f1, f2 = st.columns(2)
-                    with f1:
-                        if st.button("👍 Like", key=f"like_{key}_{n}", use_container_width=True):
-                            con.execute("DELETE FROM feedback WHERE username=? AND outfit_key=?", (user, key))
-                            con.execute("INSERT INTO feedback(username,outfit_key,rating) VALUES(?,?,?)", (user, key, 1))
-                            con.commit()
-                            st.rerun()
-                    with f2:
-                        if st.button("👎 Dislike", key=f"dislike_{key}_{n}", use_container_width=True):
-                            con.execute("DELETE FROM feedback WHERE username=? AND outfit_key=?", (user, key))
-                            con.execute("INSERT INTO feedback(username,outfit_key,rating) VALUES(?,?,?)", (user, key, -1))
-                            con.commit()
-                            st.rerun()
+            for n, (score, key, a, b, colour_score, vector_similarity) in enumerate(ranked[:8], 1):
+                st.markdown("---")
+                st.subheader(f"Outfit idea {n}")
+                if a["id"] == b["id"]:
+                    pic = full_path(a["image_path"])
+                    if pic and os.path.exists(pic):
+                        show_image(pic, width=180)
+                    st.write(f"**{a['name']}** · {a['category']} · {a['color']} · {a['style']}")
+                    st.caption("Complete one-piece outfit")
+                else:
+                    left, right = st.columns(2)
+                    with left:
+                        pic = full_path(a["image_path"])
+                        if pic and os.path.exists(pic):
+                            show_image(pic, width=180)
+                        st.write(f"**{a['name']}**")
+                        st.caption(f"{a['category']} · {a['color']} · {a['style']}")
+                    with right:
+                        pic = full_path(b["image_path"])
+                        if pic and os.path.exists(pic):
+                            show_image(pic, width=180)
+                        st.write(f"**{b['name']}**")
+                        st.caption(f"{b['category']} · {b['color']} · {b['style']}")
+                    st.caption(f"Colour compatibility estimate: {colour_score:.2f}")
 
-    st.caption("Note: automatic image labels can be wrong. Correct the Type and Style in My Wardrobe for better recommendations.")
+                f1, f2 = st.columns(2)
+                with f1:
+                    if st.button("👍 Like", key=f"like_{key}_{n}", use_container_width=True):
+                        con.execute("DELETE FROM feedback WHERE username=? AND outfit_key=?", (user, key))
+                        con.execute("INSERT INTO feedback(username,outfit_key,rating) VALUES(?,?,?)", (user, key, 1))
+                        con.commit()
+                        st.rerun()
+                with f2:
+                    if st.button("👎 Dislike", key=f"dislike_{key}_{n}", use_container_width=True):
+                        con.execute("DELETE FROM feedback WHERE username=? AND outfit_key=?", (user, key))
+                        con.execute("INSERT INTO feedback(username,outfit_key,rating) VALUES(?,?,?)", (user, key, -1))
+                        con.commit()
+                        st.rerun()
+
+    st.caption("For the best results, choose the correct category, colour, style and suitable occasions when saving each photo.")
 
 
 # ---------------- FEEDBACK HISTORY ----------------
