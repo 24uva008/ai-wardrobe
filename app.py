@@ -90,6 +90,7 @@ def db_connect():
             username TEXT,
             name TEXT,
             category TEXT,
+            type TEXT,
             color TEXT,
             style TEXT,
             occasions TEXT,
@@ -117,6 +118,7 @@ def db_connect():
         "username": "TEXT",
         "name": "TEXT",
         "category": "TEXT",
+        "type": "TEXT",
         "color": "TEXT",
         "style": "TEXT",
         "occasions": "TEXT",
@@ -429,7 +431,7 @@ if page != "Home":
 
 if page == "My Wardrobe":
     st.title("👗 My Wardrobe")
-    st.write("Select multiple clothing images and upload them together.")
+    st.write("Select multiple clothing images and enter details for each image.")
 
     image_files = st.file_uploader(
         "Choose all your clothing images",
@@ -438,69 +440,112 @@ if page == "My Wardrobe":
         key="multiple_clothes"
     )
 
-    if st.button("Save All Clothing", use_container_width=True):
-        if not image_files:
-            st.warning("Please select at least one image.")
-        else:
-            saved_count = 0
+    category_options = [
+        "Top", "Bottom", "Dress", "Footwear", "Accessory", "Other"
+    ]
+    type_options = [
+        "Kurti", "Shirt", "T-shirt", "Top", "Jeans", "Pant",
+        "Leggings", "Skirt", "Palazzo", "Dress", "Saree",
+        "Salwar", "Dupatta", "Jacket", "Shoes", "Sandals",
+        "Bag", "Other"
+    ]
+    color_options = [
+        "Black", "White", "Pink", "Blue", "Red", "Green",
+        "Yellow", "Purple", "Brown", "Beige", "Grey",
+        "Orange", "Multicolour", "Other"
+    ]
+    style_options = [
+        "Casual", "Formal", "Traditional", "Party", "Any"
+    ]
 
+    if image_files:
+        st.subheader("Enter details for each clothing image 💗")
+
+        for index, image_file in enumerate(image_files):
+            with st.expander(
+                f"👗 {index + 1}. {image_file.name}",
+                expanded=True
+            ):
+                st.image(image_file.getvalue(), width=150)
+                st.text_input(
+                    "Clothing name",
+                    value=os.path.splitext(image_file.name)[0],
+                    key=f"clothing_name_{index}"
+                )
+                st.selectbox(
+                    "Category", category_options, key=f"category_{index}"
+                )
+                st.selectbox(
+                    "Type", type_options, key=f"clothing_type_{index}"
+                )
+                st.selectbox(
+                    "Colour", color_options, key=f"color_{index}"
+                )
+                st.selectbox(
+                    "Style", style_options, key=f"style_{index}"
+                )
+
+        if st.button("💗 Save All Clothing", use_container_width=True):
+            saved_count = 0
+            failed_files = []
             progress = st.progress(0)
 
             for index, image_file in enumerate(image_files):
                 try:
                     image_bytes = image_file.getvalue()
+                    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-                    image = Image.open(
-                        io.BytesIO(image_bytes)
-                    ).convert("RGB")
+                    category = st.session_state[f"category_{index}"]
+                    clothing_type = st.session_state[f"clothing_type_{index}"]
+                    color = st.session_state[f"color_{index}"]
+                    style = st.session_state[f"style_{index}"]
+                    name = st.session_state[f"clothing_name_{index}"].strip()
+                    if not name:
+                        name = f"Clothing {index + 1}"
 
-                    with st.spinner(
-                        f"Processing image {index + 1} of {len(image_files)}..."
-                    ):
-                        category, color, style, occasions, vector = (
-                            analyze_clothing(image_bytes)
+                    # Save the image even if CLIP cannot load.
+                    vector_text = ""
+                    try:
+                        with st.spinner(
+                            f"Extracting image features for {image_file.name}..."
+                        ):
+                            vector_text = json.dumps(extract_clip(image_bytes))
+                    except Exception as clip_error:
+                        st.warning(
+                            f"{image_file.name} saved without CLIP features: {clip_error}"
                         )
 
                     filename = (
                         f"{hashlib.sha256(user.encode()).hexdigest()[:12]}_"
                         f"{os.urandom(5).hex()}.jpg"
                     )
-
                     path = os.path.join(IMG_DIR, filename)
                     image.save(path, format="JPEG")
 
-                    name = os.path.splitext(image_file.name)[0].strip()
-                    if not name:
-                        name = f"Clothing {index + 1}"
-
                     con.execute("""
                         INSERT INTO clothes
-                        (username, name, category, color, style,
+                        (username, name, category, type, color, style,
                          occasions, image_path, clip_vector)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        user,
-                        name,
-                        category,
-                        color,
-                        style,
-                        occasions,
-                        os.path.join("wardrobe_images", filename),
-                        json.dumps(vector)
+                        user, name, category, clothing_type, color, style,
+                        "Any", os.path.join("wardrobe_images", filename),
+                        vector_text
                     ))
-
                     con.commit()
                     saved_count += 1
 
                 except Exception as e:
-                    st.warning(
-                        f"Could not process {image_file.name}: {e}"
-                    )
+                    failed_files.append(f"{image_file.name}: {e}")
 
                 progress.progress((index + 1) / len(image_files))
 
-            st.success(f"Saved {saved_count} clothing image(s).")
-            st.rerun()
+            if saved_count:
+                st.success(f"Successfully saved {saved_count} clothing image(s)! 💗")
+            for error in failed_files:
+                st.error(f"Could not save: {error}")
+            if not failed_files:
+                st.rerun()
 
     clothes = con.execute(
         "SELECT * FROM clothes WHERE username=? ORDER BY id DESC",
@@ -508,24 +553,21 @@ if page == "My Wardrobe":
     ).fetchall()
 
     st.subheader(f"My saved clothes ({len(clothes)})")
-
     if not clothes:
         st.info("Upload some clothing images to get started.")
     else:
         cols = st.columns(3)
-
         for index, item in enumerate(clothes):
             with cols[index % 3]:
                 path = full_path(item["image_path"])
-
                 if path and os.path.exists(path):
                     show_image(path)
-
                 st.markdown(f"**{item['name']}**")
                 st.caption(
                     f"{item['category'] or 'Other'} · "
-                    f"{item['color'] or 'Unknown'}"
+                    f"{item['type'] or 'Not specified'}"
                 )
+                st.caption(f"Colour: {item['color'] or 'Unknown'}")
                 st.caption(f"Style: {item['style'] or 'Any'}")
 
                 if st.button(
@@ -535,7 +577,6 @@ if page == "My Wardrobe":
                 ):
                     if path and os.path.exists(path):
                         os.remove(path)
-
                     con.execute(
                         "DELETE FROM clothes WHERE id=? AND username=?",
                         (item["id"], user)
